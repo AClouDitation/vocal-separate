@@ -36,7 +36,8 @@
         lyricsOffset: 0,       // seconds added to playback time for highlighting
         lyricsActiveIdx: -1,
         lyricsCandidates: [],
-        lyricsReqToken: 0
+        lyricsReqToken: 0,
+        isEditingLyrics: false
     };
 
     const $ = (id) => document.getElementById(id);
@@ -1122,10 +1123,19 @@
         return lines;
     }
 
+    function formatLrcTimestamp(sec) {
+        const clamped = Math.max(0, Number(sec) || 0);
+        const mins = Math.floor(clamped / 60);
+        const rem = clamped - mins * 60;
+        const secStr = rem.toFixed(2).padStart(5, "0");
+        return `[${String(mins).padStart(2, "0")}:${secStr}]`;
+    }
+
     function applyLyricsRecord(record) {
         state.lyrics = record || null;
         state.lyricsOffset = Number(record?.offset || 0);
         state.lyricsActiveIdx = -1;
+        state.isEditingLyrics = false;
         state.lyricsLines = record?.syncedLyrics ? parseLrc(record.syncedLyrics) : [];
 
         const hasSynced = state.lyricsLines.length > 0;
@@ -1156,20 +1166,20 @@
         const vp = $("lyricsViewport");
         if (hasSynced) {
             vp.innerHTML = state.lyricsLines.map((line, idx) => `
-                <button type="button" class="lyric-line" data-lyric-idx="${idx}" data-lyric-time="${line.time}">
-                    <span class="lyric-line-time">${formatTime(line.time)}</span>${escapeHtml(line.text)}
+                <button type="button" class="lyric-line" data-lyric-idx="${idx}" data-lyric-time="${line.time}" title="Click to seek • Double-click to edit">
+                    <span class="lyric-line-time">${formatTime(line.time)}</span><span class="lyric-line-text">${escapeHtml(line.text)}</span>
                 </button>
             `).join("");
             updateSyncedLyricsHighlight(getMasterTime(), true);
         } else if (hasPlain) {
-            vp.innerHTML = `<div class="lyrics-plain">${escapeHtml(record.plainLyrics)}</div>`;
+            vp.innerHTML = `<div class="lyrics-plain" title="Double-click to edit lyrics">${escapeHtml(record.plainLyrics)}</div>`;
         } else {
-            vp.innerHTML = '<div class="lyrics-placeholder">No lyrics matched by filename.<br>Use <strong>Audio Fingerprint</strong>, <strong>Local Whisper</strong>, or <strong>Title Match</strong> above.</div>';
+            vp.innerHTML = '<div class="lyrics-placeholder" title="Double-click to type or paste lyrics">No lyrics matched by filename.<br>Use <strong>Audio Fingerprint</strong>, <strong>Local Whisper</strong>, <strong>Title Match</strong>, or double-click here to enter lyrics.</div>';
         }
     }
 
     function updateSyncedLyricsHighlight(currentTime, forceScroll) {
-        if (!state.lyricsLines.length) return;
+        if (!state.lyricsLines.length || state.isEditingLyrics) return;
         const t = currentTime + state.lyricsOffset;
         let idx = -1;
         for (let i = 0; i < state.lyricsLines.length; i++) {
@@ -1414,12 +1424,198 @@
         }
     });
 
+    // Inline Line Editing & Raw Lyrics Editor
+    let lyricClickTimer = null;
+
+    function commitSyncedLinesEdit(nextLines, jumpToIdx = null) {
+        const cleaned = nextLines.filter((l) => l.text.trim().length > 0);
+        const scrollTop = $("lyricsViewport").scrollTop;
+        const base = state.lyrics || {
+            id: `manual:${Date.now()}`,
+            trackName: state.activeTrack?.name || "",
+            artistName: "",
+            albumName: "",
+            duration: state.duration || null,
+            source: "Edited",
+            offset: 0
+        };
+        const updated = {
+            ...base,
+            syncedLyrics: cleaned.length
+                ? cleaned.map((l) => `${formatLrcTimestamp(l.time)} ${l.text.trim()}`).join("\n")
+                : null,
+            plainLyrics: cleaned.length
+                ? cleaned.map((l) => l.text.trim()).join("\n")
+                : null
+        };
+        applyLyricsRecord(updated);
+        $("lyricsViewport").scrollTop = scrollTop;
+        persistLyrics(state.activeTrack?.name, updated);
+        showToast("Lyrics saved");
+        if (jumpToIdx !== null && jumpToIdx >= 0 && jumpToIdx < state.lyricsLines.length) {
+            startInlineLineEdit(jumpToIdx);
+        }
+    }
+
+    function startInlineLineEdit(idx) {
+        const line = state.lyricsLines[idx];
+        const vp = $("lyricsViewport");
+        const row = vp.querySelector(`.lyric-line[data-lyric-idx="${idx}"]`);
+        if (!line || !row) return;
+
+        state.isEditingLyrics = true;
+        const wrap = document.createElement("div");
+        wrap.className = "lyric-line-edit";
+        wrap.innerHTML = `
+            <span class="lyric-line-time">${formatTime(line.time)}</span>
+            <input type="text" class="lyric-line-input" aria-label="Edit lyric line">
+        `;
+        const input = wrap.querySelector(".lyric-line-input");
+        input.value = line.text;
+        row.replaceWith(wrap);
+        input.focus();
+        input.select();
+
+        let finished = false;
+        const cancel = () => {
+            if (finished) return;
+            finished = true;
+            const scrollTop = vp.scrollTop;
+            applyLyricsRecord(state.lyrics);
+            vp.scrollTop = scrollTop;
+        };
+
+        const save = (jumpDelta = 0) => {
+            if (finished) return;
+            finished = true;
+            const newText = input.value.trim();
+            if (newText === line.text && jumpDelta === 0) {
+                const scrollTop = vp.scrollTop;
+                applyLyricsRecord(state.lyrics);
+                vp.scrollTop = scrollTop;
+                return;
+            }
+            const nextLines = state.lyricsLines.map((l, i) =>
+                i === idx ? { ...l, text: newText } : l
+            );
+            const targetIdx = jumpDelta !== 0
+                ? (newText ? idx + jumpDelta : (jumpDelta > 0 ? idx : idx - 1))
+                : null;
+            commitSyncedLinesEdit(nextLines, targetIdx);
+        };
+
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                save(0);
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancel();
+            } else if (e.key === "Tab") {
+                e.preventDefault();
+                save(e.shiftKey ? -1 : 1);
+            }
+        });
+        input.addEventListener("blur", () => save(0));
+    }
+
+    function openRawLyricsEditor() {
+        if (!state.activeTrack) return;
+        state.isEditingLyrics = true;
+        const initialText = state.lyrics?.syncedLyrics || state.lyrics?.plainLyrics || "";
+        const vp = $("lyricsViewport");
+        vp.innerHTML = `
+            <div class="lyrics-raw-editor">
+                <textarea class="lyrics-raw-textarea" id="lyricsRawTextarea" placeholder="Paste or edit lyrics here (supports [mm:ss.xx] LRC timestamps or plain text)..."></textarea>
+                <div class="lyrics-raw-actions">
+                    <span class="lyrics-raw-hint">Ctrl+Enter to save &bull; Esc to cancel</span>
+                    <div class="lyrics-raw-btns">
+                        <button type="button" class="batch-mini-btn" id="lyricsRawCancelBtn">Cancel</button>
+                        <button type="button" class="batch-mini-btn play" id="lyricsRawSaveBtn">Save Lyrics</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        const ta = $("lyricsRawTextarea");
+        ta.value = initialText;
+        ta.focus();
+
+        const cancel = () => {
+            applyLyricsRecord(state.lyrics);
+        };
+
+        const save = () => {
+            const raw = ta.value.trim();
+            const parsed = parseLrc(raw);
+            const hasSynced = parsed.length > 0;
+            const base = state.lyrics || {
+                id: `manual:${Date.now()}`,
+                trackName: state.activeTrack?.name || "",
+                artistName: "",
+                albumName: "",
+                duration: state.duration || null,
+                source: "Manual",
+                offset: 0
+            };
+            const updated = {
+                ...base,
+                syncedLyrics: hasSynced ? raw : null,
+                plainLyrics: hasSynced
+                    ? parsed.map((l) => l.text).join("\n")
+                    : (raw || null)
+            };
+            applyLyricsRecord(updated);
+            persistLyrics(state.activeTrack?.name, updated);
+            showToast("Lyrics saved");
+        };
+
+        $("lyricsRawCancelBtn").addEventListener("click", cancel);
+        $("lyricsRawSaveBtn").addEventListener("click", save);
+        ta.addEventListener("keydown", (e) => {
+            if (e.key === "Escape") {
+                e.preventDefault();
+                cancel();
+            } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                e.preventDefault();
+                save();
+            }
+        });
+    }
+
+    $("lyricsEditBtn").addEventListener("click", () => {
+        if (state.isEditingLyrics) {
+            applyLyricsRecord(state.lyrics);
+        } else {
+            openRawLyricsEditor();
+        }
+    });
+
     $("lyricsViewport").addEventListener("click", (e) => {
+        if (state.isEditingLyrics) return;
         const lineBtn = e.target.closest(".lyric-line");
         if (!lineBtn) return;
         const targetTime = Math.max(0, Number(lineBtn.dataset.lyricTime) - state.lyricsOffset);
-        seekAll(targetTime);
-        if (!state.isPlaying) playAll();
+        clearTimeout(lyricClickTimer);
+        lyricClickTimer = setTimeout(() => {
+            if (state.isEditingLyrics) return;
+            seekAll(targetTime);
+            if (!state.isPlaying) playAll();
+        }, 220);
+    });
+
+    $("lyricsViewport").addEventListener("dblclick", (e) => {
+        if (state.isEditingLyrics) return;
+        clearTimeout(lyricClickTimer);
+        const lineBtn = e.target.closest(".lyric-line");
+        if (lineBtn) {
+            e.preventDefault();
+            startInlineLineEdit(Number(lineBtn.dataset.lyricIdx));
+            return;
+        }
+        if (e.target.closest(".lyrics-plain") || e.target.closest(".lyrics-placeholder")) {
+            e.preventDefault();
+            openRawLyricsEditor();
+        }
     });
 
     $("lyricsSearchToggleBtn").addEventListener("click", () => {
