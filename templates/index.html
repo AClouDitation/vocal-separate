@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <title>Vocal Separate</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<header class="topbar">
+    <div class="brand">
+        <div class="brand-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+                <path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/>
+            </svg>
+        </div>
+        <span>Vocal Separate</span>
+        <span class="version-badge">v{{ version }}</span>
+    </div>
+    <div class="topbar-right">
+        {% if cuda %}
+            <span class="hw-pill cuda"><span class="hw-dot"></span>CUDA GPU &bull; FP16</span>
+        {% else %}
+            <span class="hw-pill cpu"><span class="hw-dot"></span>CPU Mode</span>
+        {% endif %}
+        <button type="button" class="icon-btn" id="themeToggle" title="Toggle light / dark theme" aria-label="Toggle theme">
+            <svg id="themeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+            </svg>
+        </button>
+    </div>
+</header>
+
+<main class="app-shell">
+    <div class="main-col">
+        <div id="alertBanner" class="alert" role="alert">
+            <span id="alertText"></span>
+            <button type="button" class="alert-close" id="alertClose" aria-label="Dismiss">&times;</button>
+        </div>
+
+        <!-- Upload & Separate Card -->
+        <section class="card">
+            <div class="card-header">
+                <div class="card-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    New Separation
+                </div>
+                <div class="mode-switch" role="tablist" aria-label="Separation mode">
+                    <button type="button" class="mode-btn active" data-mode="single" role="tab" aria-selected="true">Single File</button>
+                    <button type="button" class="mode-btn" data-mode="batch" role="tab" aria-selected="false">Batch Mode</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload audio or video file">
+                    <input type="file" id="fileInput" accept=".wav,.mp3,.flac,.mp4,.mov,.mkv,.avi,.mpeg">
+                    <div class="dropzone-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+                        </svg>
+                    </div>
+                    <div class="dropzone-title" id="dropzoneTitle">Drop an audio or video file here, or click to browse</div>
+                    <div class="dropzone-sub" id="dropzoneSub">Drop multiple files at once to switch to Batch Mode automatically</div>
+                    <div class="format-tags">
+                        <span class="format-tag">WAV</span>
+                        <span class="format-tag">MP3</span>
+                        <span class="format-tag">FLAC</span>
+                        <span class="format-tag">MP4</span>
+                        <span class="format-tag">MOV</span>
+                        <span class="format-tag">MKV</span>
+                        <span class="format-tag">AVI</span>
+                        <span class="format-tag">MPEG</span>
+                    </div>
+                </div>
+
+                <div class="upload-progress" id="uploadProgress">
+                    <div class="progress-meta">
+                        <span id="uploadStatusText">Uploading...</span>
+                        <span id="uploadPctText">0%</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill" id="uploadProgressFill"></div>
+                    </div>
+                </div>
+
+                <div class="uploaded-file" id="uploadedFile">
+                    <div class="uploaded-top">
+                        <div class="file-info">
+                            <div class="file-badge">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="20 6 9 17 4 12"/>
+                                </svg>
+                            </div>
+                            <div class="file-info-text">
+                                <div class="file-name" id="uploadedFileName"></div>
+                                <div class="file-status" id="uploadedFileMsg">Ready to separate</div>
+                            </div>
+                        </div>
+                        <button type="button" class="icon-btn" id="changeFileBtn">Replace file</button>
+                    </div>
+                    <audio id="previewAudio" controls preload="metadata"></audio>
+                </div>
+
+                <div class="batch-queue" id="batchQueue">
+                    <div class="batch-queue-head">
+                        <span id="batchQueueSummary">0 files queued</span>
+                        <div class="batch-queue-actions">
+                            <button type="button" class="batch-mini-btn" id="batchAddMoreBtn">+ Add Files</button>
+                            <button type="button" class="batch-mini-btn" id="batchClearBtn">Clear</button>
+                        </div>
+                    </div>
+                    <div class="batch-list" id="batchList"></div>
+                </div>
+
+                <div class="section-row">
+                    <div class="section-label">Separation Model</div>
+                    <div class="quality-group">
+                        <span class="quality-hint" id="qualityHint">Max quality (overlap 4 / 2 shifts)</span>
+                        <div class="mode-switch" role="group" aria-label="Speed vs quality">
+                            <button type="button" class="mode-btn quality-btn active" data-quality="quality" aria-pressed="true">High Quality</button>
+                            <button type="button" class="mode-btn quality-btn" data-quality="fast" aria-pressed="false">Fast (2&times;)</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="model-grid" role="radiogroup" aria-label="Separation model">
+                    <button type="button" class="model-option selected" data-model="2stems" aria-checked="true" role="radio">
+                        <div class="model-head">
+                            <span class="model-name">2 Stems</span>
+                            <span class="model-tag">Recommended</span>
+                        </div>
+                        <div class="model-stems">Vocals &bull; Accompaniment<br><span class="model-arch">BS-RoFormer</span></div>
+                        <div class="model-status" data-model-status="2stems">Checking...</div>
+                    </button>
+                    <button type="button" class="model-option" data-model="4stems" aria-checked="false" role="radio">
+                        <div class="model-head">
+                            <span class="model-name">4 Stems</span>
+                            <span class="model-tag">Band</span>
+                        </div>
+                        <div class="model-stems">Vocals &bull; Drums &bull; Bass &bull; Other<br><span class="model-arch">HTDemucs</span></div>
+                        <div class="model-status" data-model-status="4stems">Checking...</div>
+                    </button>
+                    <button type="button" class="model-option" data-model="6stems" aria-checked="false" role="radio">
+                        <div class="model-head">
+                            <span class="model-name">6 Stems</span>
+                            <span class="model-tag">Full</span>
+                        </div>
+                        <div class="model-stems">Vocals &bull; Drums &bull; Bass &bull; Guitar &bull; Piano &bull; Other<br><span class="model-arch">HTDemucs 6s</span></div>
+                        <div class="model-status" data-model-status="6stems">Checking...</div>
+                    </button>
+                </div>
+
+                <div class="action-row">
+                    <button type="button" class="primary-btn" id="separateBtn" disabled>
+                        <span class="spinner" aria-hidden="true"></span>
+                        <span id="separateBtnText">Start Separation</span>
+                    </button>
+                    <span class="process-status" id="processStatus">Upload a file to begin</span>
+                </div>
+
+                <div class="job-progress" id="jobProgress" aria-live="polite">
+                    <div class="job-progress-top">
+                        <span class="job-stage" id="jobStage">Starting separation job...</span>
+                        <span class="job-metrics">
+                            <span id="jobElapsed">0:00</span>
+                            <span id="jobEta"></span>
+                            <strong id="jobPct">0%</strong>
+                        </span>
+                    </div>
+                    <div class="job-bar-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="jobProgressBar">
+                        <div class="job-bar-fill active" id="jobBarFill"></div>
+                    </div>
+                    <div class="job-steps">
+                        <span class="job-step" data-step="1"><span class="job-step-dot"></span>1. Load Model</span>
+                        <span class="job-step" data-step="2"><span class="job-step-dot"></span>2. Separate Stems</span>
+                        <span class="job-step" data-step="3"><span class="job-step-dot"></span>3. Save WAVs</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Synchronized Stem Mixer Card -->
+        <section class="card" id="mixerCard">
+            <div class="card-header">
+                <div class="card-title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
+                        <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
+                        <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
+                        <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>
+                    </svg>
+                    Stem Mixer
+                </div>
+                <div class="preset-bar" id="presetBar">
+                    <button type="button" class="chip-btn" data-preset="all">All Stems</button>
+                    <button type="button" class="chip-btn" data-preset="karaoke">Karaoke</button>
+                    <button type="button" class="chip-btn" data-preset="vocals">Vocals Only</button>
+                    <button type="button" class="icon-btn" id="copyPathBtn" title="Copy output folder path">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                        </svg>
+                        Copy Path
+                    </button>
+                </div>
+            </div>
+
+            <div class="mixer-empty" id="mixerEmpty">
+                <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6"/>
+                    <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
+                </svg>
+                <p>No track loaded</p>
+                <span>Separate a new file above or pick any track from your Library</span>
+            </div>
+
+            <div class="mixer-active" id="mixerActive">
+                <div class="transport">
+                    <div class="mixer-track-meta">
+                        <div class="track-heading">
+                            <div class="track-title" id="mixerTrackTitle"></div>
+                            <div class="track-path" id="mixerTrackPath"></div>
+                        </div>
+                    </div>
+
+                    <div class="transport-controls">
+                        <div class="transport-left">
+                            <button type="button" class="icon-btn" id="restartBtn" title="Restart (R)" aria-label="Restart">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/>
+                                </svg>
+                            </button>
+                            <button type="button" class="icon-btn" id="backBtn" title="Back 5s (Left Arrow)">-5s</button>
+                            <button type="button" class="play-btn" id="playPauseBtn" title="Play / Pause (Space)" aria-label="Play or Pause">
+                                <svg id="playIcon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                                    <polygon points="6 4 20 12 6 20 6 4"/>
+                                </svg>
+                            </button>
+                            <button type="button" class="icon-btn" id="fwdBtn" title="Forward 5s (Right Arrow)">+5s</button>
+                            <button type="button" class="icon-btn" id="loopBtn" title="Toggle Loop" aria-label="Toggle Loop">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                                    <polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                                </svg>
+                            </button>
+                            <span class="time-display">
+                                <strong id="currentTime">0:00</strong> / <span id="totalTime">0:00</span>
+                            </span>
+                        </div>
+                        <div class="master-vol">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                            </svg>
+                            <input type="range" id="masterVolume" min="0" max="100" value="100" aria-label="Master volume">
+                        </div>
+                    </div>
+
+                    <div class="seek-wrap">
+                        <input type="range" id="seekBar" min="0" max="100" step="0.1" value="0" aria-label="Seek timeline">
+                    </div>
+                </div>
+
+                <div class="stems-list" id="stemsList"></div>
+
+                <!-- Synced Lyrics Panel -->
+                <div class="lyrics-panel" id="lyricsPanel">
+                    <div class="lyrics-header">
+                        <div class="lyrics-title-group">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+                            </svg>
+                            <span class="lyrics-heading">Lyrics</span>
+                            <span class="lyrics-meta" id="lyricsMeta"></span>
+                            <span class="lyrics-badge" id="lyricsBadge" style="display:none"></span>
+                        </div>
+                        <div class="lyrics-actions">
+                            <div class="offset-ctrl" id="lyricsOffsetCtrl" style="display:none" title="Adjust lyrics timing offset">
+                                <button type="button" class="batch-mini-btn" id="offsetMinusBtn">-0.5s</button>
+                                <span class="offset-val" id="lyricsOffsetVal">0.0s</span>
+                                <button type="button" class="batch-mini-btn" id="offsetPlusBtn">+0.5s</button>
+                            </div>
+                            <button type="button" class="batch-mini-btn" id="lyricsSearchToggleBtn">Search / Match</button>
+                            <button type="button" class="batch-mini-btn" id="lyricsCopyBtn" style="display:none">Copy</button>
+                            <button type="button" class="batch-mini-btn" id="lyricsDownloadBtn" style="display:none">Save .lrc</button>
+                        </div>
+                    </div>
+
+                    <div class="lyrics-search-box" id="lyricsSearchBox">
+                        <form class="lyrics-search-form" id="lyricsSearchForm">
+                            <input type="text" class="lyrics-search-input" id="lyricsQueryInput" placeholder="Search song title or artist...">
+                            <button type="submit" class="batch-mini-btn play" id="lyricsSearchSubmit">Find Lyrics</button>
+                        </form>
+                        <div class="lyrics-candidates" id="lyricsCandidates"></div>
+                    </div>
+
+                    <div class="lyrics-viewport" id="lyricsViewport">
+                        <div class="lyrics-placeholder">Loading lyrics...</div>
+                    </div>
+                </div>
+
+                <div class="shortcuts-bar">
+                    <span><kbd>Space</kbd> Play / Pause</span>
+                    <span><kbd>&larr;</kbd><kbd>&rarr;</kbd> Seek &plusmn;5s</span>
+                    <span><kbd>R</kbd> Restart</span>
+                    <span><kbd>1</kbd>&ndash;<kbd>6</kbd> Solo stem</span>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Separated Library Sidebar -->
+    <aside class="card sidebar">
+        <div class="card-header">
+            <div class="card-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                </svg>
+                Library
+            </div>
+            <span class="count-badge" id="libraryCount">0</span>
+        </div>
+        <div class="search-wrap">
+            <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" class="search-input" id="librarySearch" placeholder="Search separated tracks...">
+        </div>
+        <div class="library-list" id="libraryList">
+            <div class="library-empty">Loading library...</div>
+        </div>
+    </aside>
+</main>
+
+<div class="toast" id="toast"></div>
+<script src="/static/js/app.js" defer></script>
+</body>
+</html>

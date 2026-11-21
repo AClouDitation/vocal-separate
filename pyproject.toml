@@ -1,0 +1,13 @@
+[project]
+name = "vocal-separate"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "flask",
+    "requests",
+    "gevent",
+    "audio-separator[gpu]",
+    "onnxruntime-gpu<1.24",
+]

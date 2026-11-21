@@ -1,0 +1,16 @@
+venv
+.venv
+.idea
+build
+dist
+__pycache__/
+*.pyc
+pretrained_models/*
+!pretrained_models/download-address.txt
+static/tmp/*
+static/files/*
+*.log
+*.wav
+*.mp3
+*.spec
+*.exe
