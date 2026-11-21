@@ -10,4 +10,6 @@ dependencies = [
     "gevent",
     "audio-separator[gpu]",
     "onnxruntime-gpu<1.24",
+    "openai-whisper>=20250625",
+    "shazamio>=0.9.0",
 ]

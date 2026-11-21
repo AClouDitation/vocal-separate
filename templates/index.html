@@ -279,9 +279,40 @@
                                 <span class="offset-val" id="lyricsOffsetVal">0.0s</span>
                                 <button type="button" class="batch-mini-btn" id="offsetPlusBtn">+0.5s</button>
                             </div>
-                            <button type="button" class="batch-mini-btn" id="lyricsSearchToggleBtn">Search / Match</button>
                             <button type="button" class="batch-mini-btn" id="lyricsCopyBtn" style="display:none">Copy</button>
                             <button type="button" class="batch-mini-btn" id="lyricsDownloadBtn" style="display:none">Save .lrc</button>
+                        </div>
+                    </div>
+
+                    <div class="lyrics-methods-bar">
+                        <span class="lyrics-methods-label">Find via:</span>
+                        <button type="button" class="batch-mini-btn" id="lyricsSearchToggleBtn" title="Search LRCLIB by title or artist">Title Match</button>
+                        <button type="button" class="batch-mini-btn" id="lyricsFingerprintBtn" title="Identify song from audio waveform via Shazam, then fetch synced lyrics">Audio Fingerprint</button>
+                        <div class="whisper-controls">
+                            <select class="lyrics-select" id="whisperModelSelect" aria-label="Whisper model size" title="Whisper model size">
+                                <option value="turbo" selected>Whisper: turbo</option>
+                                <option value="medium">Whisper: medium</option>
+                                <option value="small">Whisper: small</option>
+                                <option value="base">Whisper: base</option>
+                            </select>
+                            <select class="lyrics-select" id="whisperLangSelect" aria-label="Whisper language" title="Vocal language">
+                                <option value="" selected>Auto lang</option>
+                                <option value="zh">Chinese</option>
+                                <option value="en">English</option>
+                                <option value="ja">Japanese</option>
+                                <option value="ko">Korean</option>
+                            </select>
+                            <button type="button" class="batch-mini-btn" id="lyricsWhisperBtn" title="Transcribe vocals.wav locally with Whisper">Local Whisper</button>
+                        </div>
+                    </div>
+
+                    <div class="lyrics-busy-bar" id="lyricsBusyBar">
+                        <div class="lyrics-busy-top">
+                            <span id="lyricsBusyStage">Working...</span>
+                            <span id="lyricsBusyPct"></span>
+                        </div>
+                        <div class="batch-mini-bar">
+                            <div class="batch-mini-fill" id="lyricsBusyFill"></div>
                         </div>
                     </div>
 

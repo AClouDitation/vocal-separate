@@ -1,7 +1,9 @@
+import asyncio
 from collections import OrderedDict
 import json
 import logging
 import re
+import tempfile
 import threading
 import time
 import uuid
@@ -25,9 +27,13 @@ _jobs = {}
 _jobs_lock = threading.Lock()
 _sep_exec_lock = threading.Lock()
 _separator_cache = OrderedDict()
+_whisper_cache = OrderedDict()
 _model_states = {}
 _model_states_lock = threading.Lock()
 _MAX_CACHED_MODELS = 2
+_MAX_CACHED_WHISPER = 1
+_WHISPER_MODELS = ("turbo", "medium", "small", "base", "tiny", "large-v3")
+_WHISPER_DIR = os.path.join(cfg.MODEL_DIR, "whisper")
 _orig_tqdm_update = tqdm.tqdm.update
 _orig_tqdm_iter = tqdm.tqdm.__iter__
 
@@ -914,6 +920,7 @@ def _query_lrclib(query, duration=None):
                 "duration": item_dur,
                 "syncedLyrics": synced,
                 "plainLyrics": plain,
+                "source": "LRCLIB",
                 "_score": (
                     0 if synced else 1,
                     0 if dur_diff <= 5.0 else (1 if dur_diff <= 15.0 else 2),
@@ -985,6 +992,24 @@ def search_lyrics():
         return jsonify({"code": 1, "msg": f"Lyrics lookup failed: {e}", "results": []})
 
 
+def _write_lyrics_cache(track_dir, lyrics):
+    record = {
+        "id": lyrics.get("id"),
+        "trackName": lyrics.get("trackName") or "",
+        "artistName": lyrics.get("artistName") or "",
+        "albumName": lyrics.get("albumName") or "",
+        "duration": lyrics.get("duration"),
+        "syncedLyrics": lyrics.get("syncedLyrics"),
+        "plainLyrics": lyrics.get("plainLyrics"),
+        "source": lyrics.get("source") or "LRCLIB",
+        "offset": float(lyrics.get("offset") or 0.0),
+    }
+    lyrics_path = os.path.join(track_dir, "lyrics.json")
+    with open(lyrics_path, "w", encoding="utf-8") as f:
+        json.dump(record, f, ensure_ascii=False, indent=2)
+    return record
+
+
 @app.route("/lyrics/save", methods=["POST"])
 def save_lyrics():
     payload = request.get_json(silent=True) or {}
@@ -996,24 +1021,343 @@ def save_lyrics():
     if not isinstance(lyrics, dict):
         return jsonify({"code": 1, "msg": "Invalid lyrics payload"}), 400
 
-    record = {
-        "id": lyrics.get("id"),
-        "trackName": lyrics.get("trackName") or "",
-        "artistName": lyrics.get("artistName") or "",
-        "albumName": lyrics.get("albumName") or "",
-        "duration": lyrics.get("duration"),
-        "syncedLyrics": lyrics.get("syncedLyrics"),
-        "plainLyrics": lyrics.get("plainLyrics"),
-        "offset": float(lyrics.get("offset") or 0.0),
-    }
-    lyrics_path = os.path.join(track_dir, "lyrics.json")
     try:
-        with open(lyrics_path, "w", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
+        record = _write_lyrics_cache(track_dir, lyrics)
         return jsonify({"code": 0, "lyrics": record})
     except Exception as e:
         app.logger.error(f"[lyrics/save] error for {track}: {e}")
         return jsonify({"code": 1, "msg": str(e)}), 500
+
+
+def _prepare_fingerprint_audio(track_name, track_dir):
+    """Return (audio_path, temp_path_to_cleanup) for Shazam fingerprinting."""
+    for ext in (".wav", ".mp3", ".flac", ".m4a", ".mp4", ".mov", ".mkv"):
+        cand = os.path.join(cfg.TMP_DIR, f"{track_name}{ext}")
+        if os.path.isfile(cand) and os.path.getsize(cand) > 0:
+            return cand, None
+
+    # Fallback: mix stems from track_dir into a temporary 25s clip
+    wavs = sorted(
+        os.path.join(track_dir, f)
+        for f in os.listdir(track_dir)
+        if f.lower().endswith(".wav")
+    )
+    if not wavs:
+        return None, None
+    if len(wavs) == 1:
+        return wavs[0], None
+
+    import numpy as np
+    import soundfile as sf
+
+    info = sf.info(wavs[0])
+    sr = info.samplerate
+    total_frames = info.frames
+    clip_frames = min(total_frames, int(sr * 25))
+    start_frame = min(max(0, total_frames - clip_frames), int(total_frames * 0.25))
+
+    mixed = None
+    for wp in wavs:
+        data, _ = sf.read(wp, start=start_frame, frames=clip_frames, dtype="float32", always_2d=True)
+        if mixed is None:
+            mixed = data
+        else:
+            n = min(len(mixed), len(data))
+            mixed = mixed[:n] + data[:n]
+
+    peak = float(np.max(np.abs(mixed))) if mixed is not None and len(mixed) else 0.0
+    if peak > 1.0:
+        mixed = mixed / peak
+
+    fd, tmp_wav = tempfile.mkstemp(prefix="vs_fp_", suffix=".wav")
+    os.close(fd)
+    sf.write(tmp_wav, mixed, sr)
+    return tmp_wav, tmp_wav
+
+
+def _fingerprint_and_lookup(track_name, track_dir, duration):
+    audio_path, cleanup_path = _prepare_fingerprint_audio(track_name, track_dir)
+    if not audio_path:
+        return {"code": 1, "msg": "No audio file available to fingerprint", "results": []}
+
+    async def _recognize(path):
+        from shazamio import Shazam
+
+        async with Shazam() as shazam:
+            return await shazam.recognize(path)
+
+    try:
+        out = asyncio.run(_recognize(audio_path))
+    finally:
+        if cleanup_path and os.path.exists(cleanup_path):
+            try:
+                os.remove(cleanup_path)
+            except OSError:
+                pass
+
+    track_info = (out or {}).get("track") or {}
+    title = (track_info.get("title") or "").strip()
+    artist = (track_info.get("subtitle") or "").strip()
+    if not title:
+        return {
+            "code": 1,
+            "msg": "Audio fingerprint did not match any known song. Try Local Whisper instead.",
+            "results": [],
+        }
+
+    shazam_plain = None
+    for sec in track_info.get("sections") or []:
+        if sec.get("type") == "LYRICS" and sec.get("text"):
+            shazam_plain = "\n".join(sec["text"]).strip()
+            break
+
+    query = f"{title} {artist}".strip()
+    results = []
+    try:
+        results = _query_lrclib(query, duration)
+        if not results and artist:
+            results = _query_lrclib(title, duration)
+        for item in results:
+            item["source"] = "Shazam + LRCLIB"
+    except Exception as e:
+        app.logger.warning(f"[lyrics/fingerprint] LRCLIB lookup failed for {query!r}: {e}")
+
+    if shazam_plain:
+        results.append(
+            {
+                "id": f"shazam:{track_info.get('key', title)}",
+                "trackName": title,
+                "artistName": artist,
+                "albumName": "",
+                "duration": duration,
+                "syncedLyrics": None,
+                "plainLyrics": shazam_plain,
+                "source": "Shazam",
+            }
+        )
+
+    return {
+        "code": 0,
+        "identified": {"title": title, "artist": artist},
+        "query": query,
+        "results": results,
+    }
+
+
+@app.route("/lyrics/fingerprint", methods=["POST"])
+def fingerprint_lyrics():
+    payload = request.get_json(silent=True) or {}
+    track = (payload.get("track") or "").strip()
+    track_dir = _safe_track_dir(track)
+    if not track_dir:
+        return jsonify({"code": 1, "msg": "Track folder not found", "results": []}), 404
+    duration = _get_track_duration(track_dir)
+    try:
+        res = gevent.get_hub().threadpool.spawn(
+            _fingerprint_and_lookup, track, track_dir, duration
+        ).get()
+        return jsonify(res)
+    except Exception as e:
+        app.logger.error(f"[lyrics/fingerprint] error for {track}: {e}")
+        return jsonify({"code": 1, "msg": f"Audio fingerprinting failed: {e}", "results": []})
+
+
+def _format_lrc_timestamp(seconds):
+    sec = max(0.0, float(seconds))
+    mins = int(sec // 60)
+    rem = sec - mins * 60
+    return f"[{mins:02d}:{rem:05.2f}]"
+
+
+def _get_cached_whisper(model_name, on_load_progress=None):
+    """Return a cached Whisper model (caller must hold _sep_exec_lock)."""
+    cached = _whisper_cache.get(model_name)
+    if cached is not None:
+        _whisper_cache.move_to_end(model_name)
+        return cached, True
+
+    while len(_whisper_cache) >= _MAX_CACHED_WHISPER:
+        _, evicted = _whisper_cache.popitem(last=False)
+        del evicted
+        if cfg.cuda:
+            try:
+                import torch
+
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+    import whisper
+
+    os.makedirs(_WHISPER_DIR, exist_ok=True)
+    device = "cuda" if cfg.cuda else "cpu"
+    _job_local.progress_cb = on_load_progress
+    try:
+        model = whisper.load_model(model_name, device=device, download_root=_WHISPER_DIR)
+    finally:
+        _job_local.progress_cb = None
+
+    _whisper_cache[model_name] = model
+    return model, False
+
+
+def _pick_whisper_audio(track_name, track_dir):
+    vocals = os.path.join(track_dir, "vocals.wav")
+    if os.path.isfile(vocals) and os.path.getsize(vocals) > 0:
+        return vocals, "vocals.wav"
+    tmp_wav = os.path.join(cfg.TMP_DIR, f"{track_name}.wav")
+    if os.path.isfile(tmp_wav) and os.path.getsize(tmp_wav) > 0:
+        return tmp_wav, os.path.basename(tmp_wav)
+    wavs = sorted(f for f in os.listdir(track_dir) if f.lower().endswith(".wav"))
+    if wavs:
+        return os.path.join(track_dir, wavs[0]), wavs[0]
+    return None, None
+
+
+def _run_whisper_job(job_id, track_name, track_dir, model_name, language):
+    try:
+        audio_path, audio_label = _pick_whisper_audio(track_name, track_dir)
+        if not audio_path:
+            raise FileNotFoundError("No audio stem found to transcribe.")
+
+        _update_job(
+            job_id,
+            status="running",
+            step=1,
+            progress=8,
+            stage=f"Loading Whisper ({model_name})...",
+        )
+
+        def on_download(n, total, bar_id, desc):
+            ratio = min(1.0, max(0.0, n / total)) if total else 0.0
+            pct = 8 + int(ratio * 22)
+            _update_job(
+                job_id,
+                step=1,
+                progress=pct,
+                stage=_format_download_stage(f"Whisper {model_name}", n, total),
+            )
+
+        with _sep_exec_lock:
+            whisper_model, was_cached = _get_cached_whisper(
+                model_name, on_load_progress=on_download
+            )
+            _update_job(
+                job_id,
+                step=2,
+                progress=35,
+                stage=(
+                    f"Transcribing {audio_label} with Whisper ({model_name})..."
+                    if not was_cached
+                    else f"Whisper cached — transcribing {audio_label}..."
+                ),
+            )
+
+            transcribe_opts = {
+                "fp16": bool(cfg.cuda),
+                "condition_on_previous_text": False,
+                "verbose": False,
+            }
+            if language:
+                transcribe_opts["language"] = language
+
+            result = whisper_model.transcribe(audio_path, **transcribe_opts)
+
+        _update_job(
+            job_id,
+            step=3,
+            progress=92,
+            stage="Formatting synced LRC lyrics...",
+        )
+
+        lrc_lines = []
+        plain_lines = []
+        for seg in result.get("segments") or []:
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            ts = _format_lrc_timestamp(seg.get("start", 0.0))
+            lrc_lines.append(f"{ts} {text}")
+            plain_lines.append(text)
+
+        if not lrc_lines:
+            raise RuntimeError("Whisper did not detect any sung vocals in this track.")
+
+        detected_lang = (result.get("language") or language or "").upper()
+        lang_suffix = f", {detected_lang}" if detected_lang else ""
+        duration = _get_track_duration(track_dir)
+        record = _write_lyrics_cache(
+            track_dir,
+            {
+                "id": f"whisper:{model_name}:{int(time.time())}",
+                "trackName": _clean_track_query(track_name),
+                "artistName": f"Transcribed ({audio_label}{lang_suffix})",
+                "albumName": "",
+                "duration": duration,
+                "syncedLyrics": "\n".join(lrc_lines),
+                "plainLyrics": "\n".join(plain_lines),
+                "source": f"Whisper ({model_name})",
+                "offset": 0.0,
+            },
+        )
+
+        _update_job(
+            job_id,
+            status="done",
+            step=3,
+            progress=100,
+            stage=f"Transcribed {len(lrc_lines)} lines",
+            finished_at=time.time(),
+            result=record,
+        )
+    except Exception as e:
+        _job_local.progress_cb = None
+        app.logger.error(f"[whisper:{job_id}] error: {e}")
+        _update_job(
+            job_id,
+            status="error",
+            stage="Whisper transcription failed",
+            finished_at=time.time(),
+            error=str(e),
+        )
+
+
+@app.route("/lyrics/whisper", methods=["POST"])
+def whisper_lyrics():
+    payload = request.get_json(silent=True) or {}
+    track = (payload.get("track") or "").strip()
+    model_name = (payload.get("model") or "turbo").strip().lower()
+    language = (payload.get("language") or "").strip().lower()
+
+    track_dir = _safe_track_dir(track)
+    if not track_dir:
+        return jsonify({"code": 1, "msg": "Track folder not found"}), 404
+    if model_name not in _WHISPER_MODELS:
+        return jsonify({"code": 1, "msg": f"Unsupported Whisper model: {model_name}"}), 400
+
+    job_id = uuid.uuid4().hex
+    now = time.time()
+    with _jobs_lock:
+        _prune_old_jobs()
+        _jobs[job_id] = {
+            "job_id": job_id,
+            "mode": "whisper",
+            "status": "queued",
+            "step": 1,
+            "progress": 4,
+            "stage": f"Starting Whisper ({model_name})...",
+            "started_at": now,
+            "finished_at": None,
+            "result": None,
+            "error": None,
+        }
+
+    threading.Thread(
+        target=_run_whisper_job,
+        args=(job_id, track, track_dir, model_name, language),
+        daemon=True,
+    ).start()
+    return jsonify({"code": 0, "job_id": job_id})
 
 
 @app.route("/api", methods=["POST"])

@@ -1138,7 +1138,8 @@
             $("lyricsMeta").title = label;
             badge.style.display = "";
             badge.className = `lyrics-badge ${hasSynced ? "" : "plain"}`;
-            badge.textContent = hasSynced ? "Synced" : "Plain";
+            const modeLabel = hasSynced ? "Synced" : "Plain";
+            badge.textContent = record.source ? `${modeLabel} • ${record.source}` : modeLabel;
             $("lyricsOffsetCtrl").style.display = hasSynced ? "inline-flex" : "none";
             $("lyricsOffsetVal").textContent = `${state.lyricsOffset >= 0 ? "+" : ""}${state.lyricsOffset.toFixed(1)}s`;
             $("lyricsCopyBtn").style.display = "";
@@ -1163,7 +1164,7 @@
         } else if (hasPlain) {
             vp.innerHTML = `<div class="lyrics-plain">${escapeHtml(record.plainLyrics)}</div>`;
         } else {
-            vp.innerHTML = '<div class="lyrics-placeholder">No lyrics found for this track yet.<br>Try searching by song title + artist above.</div>';
+            vp.innerHTML = '<div class="lyrics-placeholder">No lyrics matched by filename.<br>Use <strong>Audio Fingerprint</strong>, <strong>Local Whisper</strong>, or <strong>Title Match</strong> above.</div>';
         }
     }
 
@@ -1266,12 +1267,29 @@
         }
     }
 
+    function setLyricsBusy(show, stage = "", pct = null) {
+        const bar = $("lyricsBusyBar");
+        bar.classList.toggle("show", show);
+        if (show) {
+            $("lyricsBusyStage").textContent = stage;
+            $("lyricsBusyPct").textContent = pct !== null ? `${Math.round(pct)}%` : "";
+            const fill = $("lyricsBusyFill");
+            fill.style.width = pct !== null ? `${Math.max(5, Math.min(100, pct))}%` : "45%";
+            fill.classList.remove("done", "error");
+        }
+        $("lyricsFingerprintBtn").disabled = show;
+        $("lyricsWhisperBtn").disabled = show;
+        $("whisperModelSelect").disabled = show;
+        $("whisperLangSelect").disabled = show;
+    }
+
     async function loadLyricsForTrack(trackName) {
         const token = ++state.lyricsReqToken;
         state.lyrics = null;
         state.lyricsLines = [];
         state.lyricsCandidates = [];
         state.lyricsActiveIdx = -1;
+        setLyricsBusy(false);
         $("lyricsCandidates").innerHTML = "";
         $("lyricsSearchBox").classList.remove("show");
         $("lyricsMeta").textContent = "";
@@ -1297,6 +1315,104 @@
             applyLyricsRecord(null);
         }
     }
+
+    // Audio Fingerprinting (Shazam -> LRCLIB)
+    $("lyricsFingerprintBtn").addEventListener("click", async () => {
+        const trackName = state.activeTrack?.name;
+        if (!trackName) return;
+        const token = ++state.lyricsReqToken;
+        setLyricsBusy(true, "Fingerprinting audio via Shazam...", 35);
+        try {
+            const resp = await fetch("/lyrics/fingerprint", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ track: trackName })
+            });
+            const res = await resp.json();
+            if (token !== state.lyricsReqToken) return;
+
+            if (res.code !== 0) {
+                showToast(res.msg || "Could not identify song");
+                $("lyricsCandidates").innerHTML = `<div style="font-size:12px;color:var(--danger);padding:6px 2px">${escapeHtml(res.msg || "Fingerprint failed")}</div>`;
+                $("lyricsSearchBox").classList.add("show");
+                return;
+            }
+
+            if (res.query) $("lyricsQueryInput").value = res.query;
+            state.lyricsCandidates = res.results || [];
+            const idLabel = [res.identified?.title, res.identified?.artist].filter(Boolean).join(" — ");
+
+            if (state.lyricsCandidates.length > 0) {
+                const best = { ...state.lyricsCandidates[0], offset: 0 };
+                applyLyricsRecord(best);
+                persistLyrics(trackName, best);
+                renderLyricsCandidates();
+                showToast(`Identified: ${idLabel}`);
+            } else {
+                renderLyricsCandidates();
+                $("lyricsSearchBox").classList.add("show");
+                showToast(`Identified "${idLabel}", but no lyrics found on LRCLIB — try Local Whisper`);
+            }
+        } catch (err) {
+            if (token === state.lyricsReqToken) {
+                showToast(`Fingerprint error: ${err.message}`);
+            }
+        } finally {
+            if (token === state.lyricsReqToken) setLyricsBusy(false);
+        }
+    });
+
+    // Local Whisper Transcription on vocals.wav
+    $("lyricsWhisperBtn").addEventListener("click", async () => {
+        const trackName = state.activeTrack?.name;
+        if (!trackName) return;
+        const token = ++state.lyricsReqToken;
+        const model = $("whisperModelSelect").value;
+        const language = $("whisperLangSelect").value;
+
+        setLyricsBusy(true, `Starting Whisper (${model})...`, 5);
+        try {
+            const createResp = await fetch("/lyrics/whisper", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ track: trackName, model, language })
+            });
+            const created = await createResp.json();
+            if (token !== state.lyricsReqToken) return;
+            if (created.code !== 0) {
+                throw new Error(created.msg || "Could not start Whisper transcription.");
+            }
+
+            const jobId = created.job_id;
+            while (true) {
+                await new Promise((r) => setTimeout(r, 400));
+                if (token !== state.lyricsReqToken) return;
+                const pollResp = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
+                const job = await pollResp.json();
+                if (token !== state.lyricsReqToken) return;
+                if (job.code !== 0) {
+                    throw new Error(job.msg || "Lost Whisper job status.");
+                }
+                setLyricsBusy(true, `${job.stage} (${formatTime(job.elapsed || 0)})`, job.progress ?? 30);
+
+                if (job.status === "error") {
+                    throw new Error(job.error || "Whisper transcription failed.");
+                }
+                if (job.status === "done") {
+                    applyLyricsRecord(job.result);
+                    $("lyricsSearchBox").classList.remove("show");
+                    showToast(`Transcribed with Whisper (${model})`);
+                    break;
+                }
+            }
+        } catch (err) {
+            if (token === state.lyricsReqToken) {
+                showAlert(err.message || "Whisper transcription failed.");
+            }
+        } finally {
+            if (token === state.lyricsReqToken) setLyricsBusy(false);
+        }
+    });
 
     $("lyricsViewport").addEventListener("click", (e) => {
         const lineBtn = e.target.closest(".lyric-line");
