@@ -74,6 +74,17 @@
                     </div>
                 </div>
 
+                <div class="yt-divider"><span>or download MP3 from YouTube</span></div>
+                <form class="yt-form" id="youtubeForm">
+                    <div class="yt-input-wrap">
+                        <svg class="yt-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.4 31.4 0 0 0 0 12a31.4 31.4 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.4 31.4 0 0 0 24 12a31.4 31.4 0 0 0-.5-5.8zM9.6 15.6V8.4l6.3 3.6-6.3 3.6z"/>
+                        </svg>
+                        <input type="url" class="yt-input" id="youtubeUrlInput" placeholder="Paste YouTube link (youtube.com/watch?v=... or youtu.be/...)" autocomplete="off">
+                    </div>
+                    <button type="submit" class="icon-btn yt-btn" id="youtubeDownloadBtn">Download MP3</button>
+                </form>
+
                 <div class="upload-progress" id="uploadProgress">
                     <div class="progress-meta">
                         <span id="uploadStatusText">Uploading...</span>
@@ -97,7 +108,15 @@
                                 <div class="file-status" id="uploadedFileMsg">Ready to separate</div>
                             </div>
                         </div>
-                        <button type="button" class="icon-btn" id="changeFileBtn">Replace file</button>
+                        <div class="uploaded-actions">
+                            <a class="icon-btn" id="downloadMp3Btn" href="#" download style="display:none" title="Download extracted MP3">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                                </svg>
+                                Download MP3
+                            </a>
+                            <button type="button" class="icon-btn" id="changeFileBtn">Replace file</button>
+                        </div>
                     </div>
                     <audio id="previewAudio" controls preload="metadata"></audio>
                 </div>

@@ -12,4 +12,5 @@ dependencies = [
     "onnxruntime-gpu<1.24",
     "openai-whisper>=20250625",
     "shazamio>=0.9.0",
+    "yt-dlp>=2026.10.21",
 ]

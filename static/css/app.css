@@ -331,6 +331,87 @@ button, input {
     letter-spacing: 0.03em;
 }
 
+/* YouTube Link Downloader */
+.yt-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 14px 0 10px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.yt-divider::before,
+.yt-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+}
+
+.yt-form {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.yt-input-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+.yt-icon {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #ef4444;
+    pointer-events: none;
+}
+
+.yt-input {
+    width: 100%;
+    height: 38px;
+    padding: 0 12px 0 36px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.yt-input:focus {
+    border-color: var(--accent);
+}
+
+.yt-btn {
+    height: 38px;
+    padding: 0 14px;
+    white-space: nowrap;
+    font-weight: 600;
+}
+
+.yt-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.uploaded-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.uploaded-actions a.icon-btn {
+    text-decoration: none;
+}
+
 /* Upload Progress */
 .upload-progress {
     display: none;

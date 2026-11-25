@@ -277,6 +277,7 @@
             state.uploadedWav = res.data;
             $("uploadedFileName").textContent = res.data;
             $("uploadedFileMsg").textContent = res.msg || "Ready to separate";
+            $("downloadMp3Btn").style.display = "none";
             $("previewAudio").src = `/static/tmp/${encodeURIComponent(res.data)}`;
             $("uploadedFile").classList.add("show");
             $("processStatus").textContent = "Ready to separate";
@@ -290,6 +291,105 @@
             updateActionState();
         }
     }
+
+    // YouTube Link -> MP3 + WAV
+    $("youtubeForm").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        if (state.isUploading || state.isProcessing) return;
+        const url = $("youtubeUrlInput").value.trim();
+        if (!url) {
+            $("youtubeUrlInput").focus();
+            return;
+        }
+        hideAlert();
+        state.isUploading = true;
+        updateActionState();
+
+        const progWrap = $("uploadProgress");
+        const progFill = $("uploadProgressFill");
+        const statusText = $("uploadStatusText");
+        const pctText = $("uploadPctText");
+
+        progWrap.classList.add("show");
+        progFill.classList.remove("indeterminate");
+        progFill.style.width = "4%";
+        statusText.textContent = "Connecting to YouTube...";
+        pctText.textContent = "4%";
+
+        try {
+            const createResp = await fetch("/youtube", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url })
+            });
+            const created = await createResp.json();
+            if (created.code !== 0) {
+                throw new Error(created.msg || "Could not start YouTube download.");
+            }
+
+            const jobId = created.job_id;
+            while (true) {
+                await new Promise((r) => setTimeout(r, 350));
+                const pollResp = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
+                const job = await pollResp.json();
+                if (job.code !== 0) {
+                    throw new Error(job.msg || "Lost connection to YouTube download job.");
+                }
+
+                const pct = Math.max(0, Math.min(100, Math.round(job.progress || 0)));
+                progFill.style.width = `${pct}%`;
+                statusText.textContent = job.stage || "Downloading...";
+                pctText.textContent = `${pct}%`;
+
+                if (job.status === "error") {
+                    throw new Error(job.error || "YouTube download failed.");
+                }
+                if (job.status === "done") {
+                    const res = job.result;
+                    $("youtubeUrlInput").value = "";
+                    if (state.mode === "batch") {
+                        if (!state.batchItems.some((it) => it.wavName === res.wav_name && it.status !== "error")) {
+                            state.batchItems.push({
+                                id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                                origName: res.mp3_name,
+                                wavName: res.wav_name,
+                                mp3Url: res.mp3_url,
+                                mp3Name: res.mp3_name,
+                                status: "ready",
+                                progress: 100,
+                                stage: "Ready",
+                                result: null,
+                                error: null
+                            });
+                        }
+                        renderBatchQueue();
+                        showToast(`Downloaded "${res.title}.mp3" to batch`);
+                    } else {
+                        state.uploadedWav = res.wav_name;
+                        $("uploadedFileName").textContent = res.mp3_name;
+                        $("uploadedFileMsg").textContent = res.uploader
+                            ? `From YouTube (${res.uploader}) • Ready to separate`
+                            : "Downloaded from YouTube • Ready to separate";
+                        const dlBtn = $("downloadMp3Btn");
+                        dlBtn.href = res.mp3_url;
+                        dlBtn.download = res.mp3_name;
+                        dlBtn.style.display = "";
+                        $("previewAudio").src = res.mp3_url;
+                        $("uploadedFile").classList.add("show");
+                        showToast(`Downloaded "${res.title}.mp3"`);
+                    }
+                    break;
+                }
+            }
+        } catch (err) {
+            showAlert(err.message || "YouTube download failed.");
+        } finally {
+            state.isUploading = false;
+            progWrap.classList.remove("show");
+            progFill.classList.remove("indeterminate");
+            updateActionState();
+        }
+    });
 
     async function uploadBatchFiles(files) {
         hideAlert();
@@ -386,6 +486,7 @@
                         <span class="batch-file-name" title="${escapeHtml(titleText)}">${escapeHtml(it.wavName || it.origName)}</span>
                         <div class="batch-row-right">
                             <span class="batch-pill ${pillClass}">${escapeHtml(it.stage)}</span>
+                            ${it.mp3Url ? `<a class="batch-mini-btn" href="${it.mp3Url}" download="${escapeHtml(it.mp3Name || it.origName)}" style="text-decoration:none" title="Download MP3">MP3</a>` : ""}
                             ${it.result ? `<button type="button" class="batch-mini-btn play" data-batch-action="load">Open in Mixer</button>` : ""}
                             ${(!state.isProcessing && !state.isUploading) ? `<button type="button" class="batch-mini-btn" data-batch-action="remove" title="Remove">&times;</button>` : ""}
                         </div>
@@ -514,6 +615,8 @@
             }
         }
         btn.classList.toggle("loading", state.isProcessing);
+        $("youtubeDownloadBtn").disabled = state.isUploading || state.isProcessing;
+        $("youtubeUrlInput").disabled = state.isUploading || state.isProcessing;
     }
 
     function renderJobProgress({ stage, progress, step, status, elapsedSec }) {

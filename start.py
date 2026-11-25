@@ -3,12 +3,13 @@ from collections import OrderedDict
 import json
 import logging
 import re
+import shutil
 import tempfile
 import threading
 import time
 import uuid
 import wave
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from flask import Flask, request, render_template, jsonify
 import os
 import gevent
@@ -162,6 +163,204 @@ def upload():
     except Exception as e:
         app.logger.error(f"[upload]error: {e}")
         return jsonify({"code": 2, "msg": cfg.transobj["lang2"]})
+
+
+def _is_youtube_url(url):
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtu.be",
+    } or host.endswith(".youtube.com")
+
+
+def _sanitize_youtube_title(title, fallback_id="youtube_audio"):
+    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", title or "")
+    s = re.sub(r"\s+", " ", s).strip(" .")
+    if len(s) > 120:
+        s = s[:120].rstrip(" .")
+    return s or fallback_id
+
+
+def _run_youtube_job(job_id, url):
+    try:
+        import yt_dlp
+
+        _update_job(
+            job_id,
+            status="running",
+            step=1,
+            progress=6,
+            stage="Fetching YouTube video info...",
+        )
+
+        meta_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+        }
+        with yt_dlp.YoutubeDL(meta_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        if not info:
+            raise RuntimeError("Could not read video metadata from YouTube.")
+
+        video_id = info.get("id") or "youtube_audio"
+        raw_title = info.get("title") or video_id
+        safe_title = _sanitize_youtube_title(raw_title, fallback_id=video_id)
+        uploader = info.get("uploader") or info.get("channel") or ""
+        duration = info.get("duration")
+
+        mp3_name = f"{safe_title}.mp3"
+        wav_name = f"{safe_title}.wav"
+        mp3_path = os.path.join(cfg.TMP_DIR, mp3_name)
+        wav_path = os.path.join(cfg.TMP_DIR, wav_name)
+
+        if not (os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0):
+            _update_job(
+                job_id,
+                step=1,
+                progress=12,
+                stage=f'Downloading "{safe_title}"...',
+            )
+
+            def on_dl_progress(d):
+                status = d.get("status")
+                if status == "downloading":
+                    total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                    downloaded = d.get("downloaded_bytes") or 0
+                    speed = d.get("speed") or 0
+                    if total > 0:
+                        ratio = min(1.0, max(0.0, downloaded / total))
+                        pct = 12 + int(ratio * 60)
+                        mb_done = downloaded / 1_048_576
+                        mb_tot = total / 1_048_576
+                        speed_txt = f" • {speed / 1_048_576:.1f} MB/s" if speed > 0 else ""
+                        stage = f'Downloading "{safe_title}" ({int(ratio * 100)}% • {mb_done:.1f}/{mb_tot:.1f} MB{speed_txt})'
+                    else:
+                        pct = 35
+                        mb_done = downloaded / 1_048_576
+                        stage = f'Downloading "{safe_title}" ({mb_done:.1f} MB)...'
+                    _update_job(job_id, step=1, progress=pct, stage=stage)
+                elif status == "finished":
+                    _update_job(
+                        job_id,
+                        step=2,
+                        progress=76,
+                        stage="Extracting 192 kbps MP3...",
+                    )
+
+            with tempfile.TemporaryDirectory(prefix="vs_yt_") as td:
+                dl_opts = {
+                    "format": "bestaudio/best",
+                    "noplaylist": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "outtmpl": os.path.join(td, "audio.%(ext)s"),
+                    "progress_hooks": [on_dl_progress],
+                    "postprocessors": [
+                        {
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": "192",
+                        }
+                    ],
+                }
+                with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                    ydl.download([url])
+
+                produced_mp3 = os.path.join(td, "audio.mp3")
+                if not os.path.isfile(produced_mp3):
+                    mp3s = [f for f in os.listdir(td) if f.lower().endswith(".mp3")]
+                    if not mp3s:
+                        raise RuntimeError("MP3 conversion did not produce an output file.")
+                    produced_mp3 = os.path.join(td, mp3s[0])
+                shutil.move(produced_mp3, mp3_path)
+
+        if not (os.path.isfile(wav_path) and os.path.getsize(wav_path) > 0):
+            _update_job(
+                job_id,
+                step=3,
+                progress=88,
+                stage="Converting MP3 to WAV for separation...",
+            )
+            rs = tool.runffmpeg(["-i", mp3_path, wav_path])
+            if rs != "ok":
+                raise RuntimeError(f"FFmpeg WAV conversion failed: {rs}")
+
+        _update_job(
+            job_id,
+            status="done",
+            step=3,
+            progress=100,
+            stage=f'Downloaded "{safe_title}.mp3"',
+            finished_at=time.time(),
+            result={
+                "code": 0,
+                "title": safe_title,
+                "uploader": uploader,
+                "duration": duration,
+                "mp3_name": mp3_name,
+                "mp3_url": f"/static/tmp/{quote(mp3_name)}",
+                "wav_name": wav_name,
+                "wav_url": f"/static/tmp/{quote(wav_name)}",
+            },
+        )
+    except Exception as e:
+        app.logger.error(f"[youtube:{job_id}] error: {e}")
+        _update_job(
+            job_id,
+            status="error",
+            stage="YouTube download failed",
+            finished_at=time.time(),
+            error=str(e),
+        )
+
+
+@app.route("/youtube", methods=["POST"])
+def youtube_download():
+    payload = request.get_json(silent=True) or {}
+    url = (payload.get("url") or request.form.get("url") or "").strip()
+    if not url or not _is_youtube_url(url):
+        return jsonify(
+            {
+                "code": 1,
+                "msg": "Please enter a valid YouTube URL (youtube.com or youtu.be).",
+            }
+        ), 400
+
+    job_id = uuid.uuid4().hex
+    now = time.time()
+    with _jobs_lock:
+        _prune_old_jobs()
+        _jobs[job_id] = {
+            "job_id": job_id,
+            "mode": "youtube",
+            "status": "queued",
+            "step": 1,
+            "progress": 3,
+            "stage": "Starting YouTube download...",
+            "started_at": now,
+            "finished_at": None,
+            "result": None,
+            "error": None,
+        }
+
+    threading.Thread(
+        target=_run_youtube_job,
+        args=(job_id, url),
+        daemon=True,
+    ).start()
+    return jsonify({"code": 0, "job_id": job_id})
 
 
 def _normalize_quality(raw):
@@ -1214,6 +1413,59 @@ def _pick_whisper_audio(track_name, track_dir):
     return None, None
 
 
+_WHISPER_HALLUCINATION_RE = re.compile(
+    r"(?:请不吝点赞|明镜与点点|打赏支持|优优独播剧场|字幕由.{0,16}提供|中文字幕|请订阅|点赞订阅"
+    r"|感谢收看|谢谢观看|谢谢大家观看|未经作者授权|amara\.org|subtitles?\s+by"
+    r"|thank(?:s|\s+you)\s+for\s+watching|please\s+subscribe|like\s+and\s+subscribe"
+    r"|ご視聴ありがとう|チャンネル登録)",
+    re.IGNORECASE,
+)
+
+
+def _load_mono_for_rms(audio_path):
+    try:
+        import numpy as np
+        import soundfile as sf
+
+        data, sr = sf.read(audio_path, dtype="float32", always_2d=True)
+        mono = data.mean(axis=1)
+        return mono, sr
+    except Exception:
+        return None, None
+
+
+def _segment_rms(mono, sr, start, end):
+    if mono is None or not sr:
+        return None
+    s_idx = max(0, int(float(start) * sr))
+    e_idx = min(len(mono), int(float(end) * sr))
+    if e_idx <= s_idx:
+        return 0.0
+    import numpy as np
+
+    seg_audio = mono[s_idx:e_idx]
+    return float(np.sqrt(np.mean(seg_audio * seg_audio)))
+
+
+def _is_hallucinated_segment(seg, text, rms):
+    if not text:
+        return True
+    if _WHISPER_HALLUCINATION_RE.search(text):
+        return True
+    no_speech = float(seg.get("no_speech_prob") or 0.0)
+    avg_logprob = float(seg.get("avg_logprob") or 0.0)
+    comp_ratio = float(seg.get("compression_ratio") or 0.0)
+    if no_speech > 0.65:
+        return True
+    if no_speech > 0.4 and avg_logprob < -1.1:
+        return True
+    if comp_ratio > 2.4:
+        return True
+    if rms is not None and rms < 0.004:
+        return True
+    return False
+
+
 def _run_whisper_job(job_id, track_name, track_dir, model_name, language):
     try:
         audio_path, audio_label = _pick_whisper_audio(track_name, track_dir)
@@ -1256,10 +1508,17 @@ def _run_whisper_job(job_id, track_name, track_dir, model_name, language):
             transcribe_opts = {
                 "fp16": bool(cfg.cuda),
                 "condition_on_previous_text": False,
+                "no_speech_threshold": 0.6,
+                "logprob_threshold": -1.0,
+                "compression_ratio_threshold": 2.2,
+                "word_timestamps": True,
+                "hallucination_silence_threshold": 2.0,
                 "verbose": False,
             }
             if language:
                 transcribe_opts["language"] = language
+                if language == "zh":
+                    transcribe_opts["initial_prompt"] = "以下是歌曲的中文歌词。"
 
             result = whisper_model.transcribe(audio_path, **transcribe_opts)
 
@@ -1270,11 +1529,13 @@ def _run_whisper_job(job_id, track_name, track_dir, model_name, language):
             stage="Formatting synced LRC lyrics...",
         )
 
+        mono, sr = _load_mono_for_rms(audio_path)
         lrc_lines = []
         plain_lines = []
         for seg in result.get("segments") or []:
             text = (seg.get("text") or "").strip()
-            if not text:
+            rms = _segment_rms(mono, sr, seg.get("start", 0.0), seg.get("end", 0.0))
+            if _is_hallucinated_segment(seg, text, rms):
                 continue
             ts = _format_lrc_timestamp(seg.get("start", 0.0))
             lrc_lines.append(f"{ts} {text}")

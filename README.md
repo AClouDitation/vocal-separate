@@ -9,6 +9,7 @@ A local web application for AI-powered music source separation, synchronized mul
   - **4 Stems:** Vocals, Drums, Bass, Other (`HTDemucs`)
   - **6 Stems:** Vocals, Drums, Bass, Guitar, Piano, Other (`HTDemucs 6s`)
   - Supports audio & video inputs (`WAV`, `MP3`, `FLAC`, `MP4`, `MOV`, `MKV`, `AVI`, `MPEG`) with automatic `ffmpeg` conversion to WAV.
+  - **YouTube Link Import (`yt-dlp`):** Paste any YouTube URL to extract a 192 kbps MP3 (with one-click MP3 download) and automatically prepare WAV audio for Single or Batch separation.
 - **Fast GPU Inference**
   - Automatic CUDA FP16 autocast and direct `soundfile` WAV export (~2× faster than FP32/`pydub`).
   - **High Quality / Fast (2×)** toggle (`overlap=4`/`2` for BS-RoFormer, `shifts=2`/`1` for HTDemucs).
@@ -73,6 +74,7 @@ vocal-separate/
 | --- | --- | --- |
 | `/` | `GET` | Web UI |
 | `/upload` | `POST` | Upload audio/video file (`audio` form field); converts to WAV in `static/tmp/` |
+| `/youtube` | `POST` | Start async YouTube download to 192 kbps MP3 + WAV (`{"url": "https://..."}`) |
 | `/jobs` | `POST` | Start async single-file separation (`wav_name`, `model`, `quality`) |
 | `/jobs/batch` | `POST` | Start async batch separation (`{"wav_names": [...], "model": "2stems", "quality": "quality"}`) |
 | `/jobs/<job_id>` | `GET` | Poll separation or Whisper transcription job progress & results |
